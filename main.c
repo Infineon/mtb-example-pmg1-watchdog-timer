@@ -7,7 +7,7 @@
 * Related Document: See README.md
 *
 *******************************************************************************
-* Copyright 2022, Cypress Semiconductor Corporation (an Infineon company) or
+* Copyright 2022-2023, Cypress Semiconductor Corporation (an Infineon company) or
 * an affiliate of Cypress Semiconductor Corporation.  All rights reserved.
 *
 * This software, including source code, documentation and related
@@ -45,6 +45,8 @@
  ******************************************************************************/
 #include "cybsp.h"
 #include "cy_pdl.h"
+#include <stdio.h>
+#include <inttypes.h>
 
 /*******************************************************************************
  * Macros
@@ -71,6 +73,8 @@
 #define WDT_INTR_NUM              ((IRQn_Type) srss_interrupt_wdt_IRQn)
 #define WDT_INTR_PRIORITY         (3u)
 
+/* Debug print macro to enable UART print */
+#define DEBUG_PRINT               (0u)
 
 /* User switch interrupt configuration structure */
 const cy_stc_sysint_t User_Switch_intr_config =
@@ -89,18 +93,55 @@ void User_Switch_Interrupt_Handler(void);
 
 #if WDT_INTERRUPT_MODE
 
-    /* WDT interrupt configuration structure */
-    cy_stc_sysint_t wdtIntrConfig =
-    {
-        .intrSrc      = WDT_INTR_NUM,
-        .intrPriority = WDT_INTR_PRIORITY,
-    };
+/* WDT interrupt configuration structure */
+cy_stc_sysint_t wdtIntrConfig =
+{
+    .intrSrc      = WDT_INTR_NUM,
+    .intrPriority = WDT_INTR_PRIORITY,
+};
 
 /*******************************************************************************
 * Function prototype
 *******************************************************************************/
-    void WDT_Isr(void);
+void WDT_Isr(void);
 
+#endif
+
+#if DEBUG_PRINT
+
+/* Structure for UART Context */
+cy_stc_scb_uart_context_t CYBSP_UART_context;
+
+/* Variable used for tracking the print status */
+volatile bool ENTER_LOOP = true;
+
+/*******************************************************************************
+* Function Name: check_status
+********************************************************************************
+* Summary:
+*  Prints the error message.
+*
+* Parameters:
+*  error_msg - message to print if any error encountered.
+*  status - status obtained after evaluation.
+*
+* Return:
+*  void
+*
+*******************************************************************************/
+void check_status(char *message, cy_rslt_t status)
+{
+    char error_msg[50];
+
+    sprintf(error_msg, "Error Code: 0x%08" PRIX32 "\n", status);
+
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, "\r\n=====================================================\r\n");
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, "\nFAIL: ");
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, message);
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, "\r\n");
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, error_msg);
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, "\r\n=====================================================\r\n");
+}
 #endif
 
 /*******************************************************************************
@@ -124,6 +165,7 @@ void User_Switch_Interrupt_Handler(void);
 int main(void)
 {
     cy_rslt_t result;
+    cy_en_sysint_status_t intr_result;
 
     uint8_t i;
     SwitchPressFlag = 0;
@@ -138,10 +180,28 @@ int main(void)
         CY_ASSERT(CY_ASSERT_FAILED);
     }
 
+#if DEBUG_PRINT
+
+    /* Configure and enable the UART peripheral */
+    result = Cy_SCB_UART_Init(CYBSP_UART_HW, &CYBSP_UART_config, &CYBSP_UART_context);
+    Cy_SCB_UART_Enable(CYBSP_UART_HW);
+
+    /* Sequence to clear screen */
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, "\x1b[2J\x1b[;H");
+
+    /* Print "Watchdog timer" */
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, "****************** ");
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, "PMG1 MCU: Watchdog timer");
+    Cy_SCB_UART_PutString(CYBSP_UART_HW, "****************** \r\n\n");
+#endif
+
     /* Initialize user switch GPIO interrupt */
-    result = Cy_SysInt_Init(&User_Switch_intr_config, &User_Switch_Interrupt_Handler);
-    if (result != CY_SYSINT_SUCCESS)
+    intr_result = Cy_SysInt_Init(&User_Switch_intr_config, &User_Switch_Interrupt_Handler);
+    if (intr_result != CY_SYSINT_SUCCESS)
     {
+#if DEBUG_PRINT
+        check_status("API Cy_SysInt_Init failed with error code", intr_result);
+#endif
         /* Insert error handler here */
         CY_ASSERT(CY_ASSERT_FAILED);
     }
@@ -150,21 +210,23 @@ int main(void)
     NVIC_ClearPendingIRQ(User_Switch_intr_config.intrSrc);
     NVIC_EnableIRQ(User_Switch_intr_config.intrSrc);
 
-    #if WDT_INTERRUPT_MODE
+#if WDT_INTERRUPT_MODE
 
-        /* Hook interrupt service routine and enable interrupt */
-        result = Cy_SysInt_Init(&wdtIntrConfig, &WDT_Isr);
+    /* Hook interrupt service routine and enable interrupt */
+    intr_result = Cy_SysInt_Init(&wdtIntrConfig, &WDT_Isr);
+    if (intr_result != CY_SYSINT_SUCCESS)
+    {
+#if DEBUG_PRINT
+        check_status("API Cy_SysInt_Init failed with error code", intr_result);
+#endif
+        /* Insert error handler here */
+        CY_ASSERT(CY_ASSERT_FAILED);
+    }
 
-        if (result != CY_SYSINT_SUCCESS)
-        {
-            /* Insert error handler here */
-            CY_ASSERT(CY_ASSERT_FAILED);
-        }
+    /* Enable the WDT Interrupt */
+    NVIC_EnableIRQ(WDT_INTR_NUM);
+#endif
 
-        /* Enable the WDT Interrupt */
-        NVIC_EnableIRQ(WDT_INTR_NUM);
-
-    #endif
 
     /* Enable global interrupts */
     __enable_irq();
@@ -179,17 +241,17 @@ int main(void)
     /* Clear all the pending WDT interrupts */
     Cy_WDT_ClearInterrupt();
 
-    #if WDT_INTERRUPT_MODE
+#if WDT_INTERRUPT_MODE
 
-        /* Unmask WDT interrupt */
-        Cy_WDT_UnmaskInterrupt();
+    /* Unmask WDT interrupt */
+    Cy_WDT_UnmaskInterrupt();
 
-    #else
+#else
 
-        /* Enables the watchdog timer reset generation. */
-        Cy_WDT_Enable();
+    /* Enables the watchdog timer reset generation. */
+    Cy_WDT_Enable();
 
-    #endif
+#endif
 
     if(Cy_SysLib_GetResetReason() == CY_SYSLIB_RESET_HWWDT)
     {
@@ -203,7 +265,6 @@ int main(void)
             Cy_SysLib_Delay(LED_DELAY_MS);
          }
     }
-
     else
     {
         /* Toggle the user LED state */
@@ -218,22 +279,30 @@ int main(void)
 
     for(;;)
     {
-        #if !WDT_INTERRUPT_MODE
-            /* Check if switch is pressed */
-            if(SwitchPressFlag)
+#if !WDT_INTERRUPT_MODE
+        /* Check if switch is pressed */
+        if(SwitchPressFlag)
+        {
+            while(1)
             {
-                while(1)
-                {
-                    /* Infinite loop to simulate firmware failure */
-                }
+                /* Infinite loop to simulate firmware failure */
             }
+        }
+        else
+        {
+            /* Clears the WatchDog to prevent device reset */
+            Cy_WDT_ClearWatchdog();
+        }
+#endif
 
-            else
-            {
-                /* Clears the WatchDog to prevent device reset */
-                Cy_WDT_ClearWatchdog();
-            }
-        #endif
+#if DEBUG_PRINT
+        if (ENTER_LOOP)
+        {
+            Cy_SCB_UART_PutString(CYBSP_UART_HW, "Entered for loop\r\n");
+            ENTER_LOOP = false;
+        }
+#endif
+
     }
 }
 
